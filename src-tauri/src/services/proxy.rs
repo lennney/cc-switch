@@ -455,8 +455,7 @@ impl ProxyService {
             .persist_ephemeral_listen_port_if_needed(&config, info.port)
             .await
         {
-            let _ = server.stop().await;
-            return Err(e);
+            log::error!("无法持久化动态端口 {}（代理将继续运行）: {}", info.port, e);
         }
 
         // 5. 保存服务器实例
@@ -573,6 +572,18 @@ impl ProxyService {
                     );
                     if let Err(e) = self.takeover_live_configs().await {
                         log::error!("fallback 后重新接管 Live 配置失败: {e}");
+                        // 重新接管失败，代理已在 fallback 端口运行但客户端仍指向旧端口
+                        match self.restore_live_configs().await {
+                            Ok(()) => {
+                                let _ = self.db.set_live_takeover_active(false).await;
+                                let _ = self.db.delete_all_live_backups().await;
+                            }
+                            Err(restore_err) => {
+                                log::error!("恢复原始配置失败，将保留备份以便下次启动恢复: {restore_err}");
+                            }
+                        }
+                        let _ = self.stop().await;
+                        return Err(format!("fallback 后重新接管 Live 配置失败: {e}"));
                     }
                 }
                 Ok(info)
